@@ -12,10 +12,6 @@ detector = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
-# =========================
-# BASE DE DATOS
-# =========================
-
 conexion = sqlite3.connect("database/vitalhuella.db")
 cursor = conexion.cursor()
 
@@ -25,9 +21,7 @@ CREATE TABLE IF NOT EXISTS asistencias (
     nombre TEXT,
     fecha TEXT,
     hora TEXT,
-    tipo TEXT,
-    tardanza_minutos INTEGER DEFAULT 0,
-    extra_minutos INTEGER DEFAULT 0
+    tipo TEXT
 )
 """)
 
@@ -54,90 +48,27 @@ CREATE TABLE IF NOT EXISTS horarios (
 
 conexion.commit()
 
-# Agregar columnas nuevas si no existen
-try:
-    cursor.execute("""
-    ALTER TABLE asistencias
-    ADD COLUMN tardanza_minutos INTEGER DEFAULT 0
-    """)
-except sqlite3.OperationalError:
-    pass
 
-try:
-    cursor.execute("""
-    ALTER TABLE asistencias
-    ADD COLUMN extra_minutos INTEGER DEFAULT 0
-    """)
-except sqlite3.OperationalError:
-    pass
-
-conexion.commit()
-
-# =========================
-# MENSAJES
-# =========================
-
-def mostrar_mensaje(ventana, texto, color):
-
-    mensaje = ctk.CTkLabel(
-        ventana,
-        text=texto,
-        text_color=color,
-        font=("Arial", 15, "bold"),
-        wraplength=500
-    )
-
-    mensaje.pack(pady=10)
-
-# =========================
-# REGISTRAR DOCENTE
-# =========================
-
-def registrar_docente_desde_ventana(
-    nombre,
-    ventana_registro,
-    horarios_temp
-):
-
+def registrar_docente_desde_ventana(nombre, ventana_registro, horarios_temp):
     nombre = nombre.strip()
 
     if nombre == "":
-        mostrar_mensaje(
-            ventana_registro,
-            "Ingrese un nombre válido",
-            "red"
-        )
+        mostrar_mensaje(ventana_registro, "Ingrese un nombre válido", "red")
         return
 
     if len(horarios_temp) == 0:
-        mostrar_mensaje(
-            ventana_registro,
-            "Agregue al menos un horario",
-            "red"
-        )
+        mostrar_mensaje(ventana_registro, "Agregue al menos un horario", "red")
         return
 
     camara = cv2.VideoCapture(0)
 
-    cv2.namedWindow(
-        "Registro Docente",
-        cv2.WND_PROP_FULLSCREEN
-    )
-
-    cv2.setWindowProperty(
-        "Registro Docente",
-        cv2.WND_PROP_TOPMOST,
-        1
-    )
+    cv2.namedWindow("Registro Docente", cv2.WND_PROP_FULLSCREEN)
+    cv2.setWindowProperty("Registro Docente", cv2.WND_PROP_TOPMOST, 1)
 
     while True:
-
         resultado, frame = camara.read()
 
-        gris = cv2.cvtColor(
-            frame,
-            cv2.COLOR_BGR2GRAY
-        )
+        gris = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         rostros = detector.detectMultiScale(
             gris,
@@ -147,89 +78,43 @@ def registrar_docente_desde_ventana(
         )
 
         for (x, y, w, h) in rostros:
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
 
-            cv2.rectangle(
-                frame,
-                (x, y),
-                (x + w, y + h),
-                (0, 255, 0),
-                3
-            )
-
-        cv2.imshow(
-            "Registro Docente",
-            frame
-        )
+        cv2.imshow("Registro Docente", frame)
 
         tecla = cv2.waitKey(1)
 
         if tecla == ord("s"):
 
             for (x, y, w, h) in rostros:
-
                 rostro = frame[y:y+h, x:x+w]
 
-                rgb_rostro = cv2.cvtColor(
-                    rostro,
-                    cv2.COLOR_BGR2RGB
-                )
-
-                codificaciones_nuevo = (
-                    face_recognition.face_encodings(
-                        rgb_rostro
-                    )
-                )
+                rgb_rostro = cv2.cvtColor(rostro, cv2.COLOR_BGR2RGB)
+                codificaciones_nuevo = face_recognition.face_encodings(rgb_rostro)
 
                 if len(codificaciones_nuevo) == 0:
-
                     camara.release()
                     cv2.destroyAllWindows()
-
-                    mostrar_mensaje(
-                        ventana_registro,
-                        "No se pudo codificar el rostro",
-                        "red"
-                    )
-
+                    mostrar_mensaje(ventana_registro, "No se pudo codificar el rostro", "red")
                     return
 
                 codificacion_nueva = codificaciones_nuevo[0]
 
                 for archivo in os.listdir("faces"):
-
                     if archivo.endswith(".jpg") or archivo.endswith(".png"):
-
                         ruta_existente = f"faces/{archivo}"
-
-                        imagen_existente = (
-                            face_recognition.load_image_file(
-                                ruta_existente
-                            )
-                        )
-
-                        codificaciones_existente = (
-                            face_recognition.face_encodings(
-                                imagen_existente
-                            )
-                        )
+                        imagen_existente = face_recognition.load_image_file(ruta_existente)
+                        codificaciones_existente = face_recognition.face_encodings(imagen_existente)
 
                         if len(codificaciones_existente) > 0:
-
-                            coincidencia = (
-                                face_recognition.compare_faces(
-                                    [codificaciones_existente[0]],
-                                    codificacion_nueva,
-                                    tolerance=0.5
-                                )
+                            coincidencia = face_recognition.compare_faces(
+                                [codificaciones_existente[0]],
+                                codificacion_nueva,
+                                tolerance=0.5
                             )
 
                             if coincidencia[0]:
-
-                                nombre_existente = (
-                                    os.path.splitext(
-                                        archivo
-                                    )[0]
-                                )
+                                nombre_existente = os.path.splitext(archivo)[0]
 
                                 camara.release()
                                 cv2.destroyAllWindows()
@@ -239,7 +124,6 @@ def registrar_docente_desde_ventana(
                                     f"Este rostro ya está registrado como\n{nombre_existente}",
                                     "red"
                                 )
-
                                 return
 
                 ruta = f"faces/{nombre}.jpg"
@@ -247,31 +131,20 @@ def registrar_docente_desde_ventana(
                 cv2.imwrite(ruta, rostro)
 
                 try:
-
                     cursor.execute("""
                     INSERT INTO docentes (
                         nombre,
                         ruta_rostro
                     )
                     VALUES (?, ?)
-                    """, (
-                        nombre,
-                        ruta
-                    ))
+                    """, (nombre, ruta))
 
                     conexion.commit()
 
                 except sqlite3.IntegrityError:
-
                     camara.release()
                     cv2.destroyAllWindows()
-
-                    mostrar_mensaje(
-                        ventana_registro,
-                        "Ese nombre ya está registrado",
-                        "red"
-                    )
-
+                    mostrar_mensaje(ventana_registro, "Ese nombre ya está registrado", "red")
                     return
 
                 cursor.execute("""
@@ -282,7 +155,6 @@ def registrar_docente_desde_ventana(
                 docente_id = cursor.fetchone()[0]
 
                 for horario in horarios_temp:
-
                     cursor.execute("""
                     INSERT INTO horarios (
                         docente_id,
@@ -313,10 +185,7 @@ def registrar_docente_desde_ventana(
                     "green"
                 )
 
-                ventana_registro.after(
-                    3000,
-                    ventana_registro.destroy
-                )
+                ventana_registro.after(3000, ventana_registro.destroy)
 
                 return
 
@@ -326,105 +195,64 @@ def registrar_docente_desde_ventana(
     camara.release()
     cv2.destroyAllWindows()
 
-# =========================
-# RECONOCER DOCENTE
-# =========================
+
+def mostrar_mensaje(ventana, texto, color):
+    mensaje = ctk.CTkLabel(
+        ventana,
+        text=texto,
+        text_color=color,
+        font=("Arial", 15, "bold"),
+        wraplength=500
+    )
+    mensaje.pack(pady=10)
+
 
 def reconocer_docente(tipo_registro):
-
     rostros_conocidos = []
     nombres_conocidos = []
 
     for archivo in os.listdir("faces"):
-
         if archivo.endswith(".jpg") or archivo.endswith(".png"):
-
             ruta = f"faces/{archivo}"
-
             imagen = face_recognition.load_image_file(ruta)
-
-            codificaciones = (
-                face_recognition.face_encodings(
-                    imagen
-                )
-            )
+            codificaciones = face_recognition.face_encodings(imagen)
 
             if len(codificaciones) > 0:
-
-                rostros_conocidos.append(
-                    codificaciones[0]
-                )
-
-                nombres_conocidos.append(
-                    os.path.splitext(archivo)[0]
-                )
+                rostros_conocidos.append(codificaciones[0])
+                nombres_conocidos.append(os.path.splitext(archivo)[0])
 
     if len(rostros_conocidos) == 0:
-
-        label_estado.configure(
-            text="No hay docentes registrados"
-        )
-
+        label_estado.configure(text="No hay docentes registrados")
         return
 
     camara = cv2.VideoCapture(0)
 
-    cv2.namedWindow(
-        "Reconocimiento Facial",
-        cv2.WND_PROP_FULLSCREEN
-    )
-
-    cv2.setWindowProperty(
-        "Reconocimiento Facial",
-        cv2.WND_PROP_TOPMOST,
-        1
-    )
+    cv2.namedWindow("Reconocimiento Facial", cv2.WND_PROP_FULLSCREEN)
+    cv2.setWindowProperty("Reconocimiento Facial", cv2.WND_PROP_TOPMOST, 1)
 
     while True:
-
         resultado, frame = camara.read()
 
-        rgb = cv2.cvtColor(
-            frame,
-            cv2.COLOR_BGR2RGB
-        )
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        ubicaciones = (
-            face_recognition.face_locations(rgb)
-        )
+        ubicaciones = face_recognition.face_locations(rgb)
+        codificaciones = face_recognition.face_encodings(rgb, ubicaciones)
 
-        codificaciones = (
-            face_recognition.face_encodings(
-                rgb,
-                ubicaciones
-            )
-        )
-
-        for codificacion, ubicacion in zip(
-            codificaciones,
-            ubicaciones
-        ):
-
-            coincidencias = (
-                face_recognition.compare_faces(
-                    rostros_conocidos,
-                    codificacion,
-                    tolerance=0.5
-                )
+        for codificacion, ubicacion in zip(codificaciones, ubicaciones):
+            coincidencias = face_recognition.compare_faces(
+                rostros_conocidos,
+                codificacion,
+                tolerance=0.5
             )
 
             nombre = "Desconocido"
 
             if True in coincidencias:
-
                 indice = coincidencias.index(True)
-
                 nombre = nombres_conocidos[indice]
 
                 ahora = datetime.now()
-
                 fecha = ahora.strftime("%d/%m/%Y")
-
                 hora = ahora.strftime("%H:%M:%S")
 
                 cursor.execute("""
@@ -434,22 +262,15 @@ def reconocer_docente(tipo_registro):
                 LIMIT 1
                 """, (nombre,))
 
-                ultimo_registro = (
-                    cursor.fetchone()
-                )
+                ultimo_registro = cursor.fetchone()
 
-                if (
-                    ultimo_registro is not None
-                    and ultimo_registro[0] == tipo_registro
-                ):
-
+                if ultimo_registro is not None and ultimo_registro[0] == tipo_registro:
                     label_estado.configure(
                         text=f"No se puede registrar otra {tipo_registro}"
                     )
 
                     camara.release()
                     cv2.destroyAllWindows()
-
                     return
 
                 cursor.execute("""
@@ -460,12 +281,7 @@ def reconocer_docente(tipo_registro):
                     tipo
                 )
                 VALUES (?, ?, ?, ?)
-                """, (
-                    nombre,
-                    fecha,
-                    hora,
-                    tipo_registro
-                ))
+                """, (nombre, fecha, hora, tipo_registro))
 
                 conexion.commit()
 
@@ -493,11 +309,7 @@ def reconocer_docente(tipo_registro):
                     2
                 )
 
-                cv2.imshow(
-                    "Reconocimiento Facial",
-                    frame
-                )
-
+                cv2.imshow("Reconocimiento Facial", frame)
                 cv2.waitKey(2000)
 
                 camara.release()
@@ -525,10 +337,7 @@ def reconocer_docente(tipo_registro):
                 2
             )
 
-        cv2.imshow(
-            "Reconocimiento Facial",
-            frame
-        )
+        cv2.imshow("Reconocimiento Facial", frame)
 
         tecla = cv2.waitKey(1)
 
@@ -538,18 +347,12 @@ def reconocer_docente(tipo_registro):
     camara.release()
     cv2.destroyAllWindows()
 
-# =========================
-# VER ASISTENCIAS
-# =========================
 
 def ver_asistencias():
-
     ventana = ctk.CTkToplevel(app)
 
     ventana.title("Registro de Asistencias")
-
     ventana.geometry("650x500")
-
     ventana.attributes("-topmost", True)
 
     titulo = ctk.CTkLabel(
@@ -557,7 +360,6 @@ def ver_asistencias():
         text="Registro de Asistencias",
         font=("Arial", 24, "bold")
     )
-
     titulo.pack(pady=20)
 
     cursor.execute("""
@@ -569,19 +371,15 @@ def ver_asistencias():
     registros = cursor.fetchall()
 
     if len(registros) == 0:
-
         mensaje = ctk.CTkLabel(
             ventana,
             text="No hay asistencias registradas",
             font=("Arial", 16)
         )
-
         mensaje.pack(pady=20)
-
         return
 
     for nombre, fecha, hora, tipo in registros:
-
         texto = f"{nombre} | {fecha} | {hora} | {tipo}"
 
         fila = ctk.CTkLabel(
@@ -589,25 +387,17 @@ def ver_asistencias():
             text=texto,
             font=("Arial", 14)
         )
-
         fila.pack(pady=5)
 
-# =========================
-# VENTANA REGISTRO DOCENTE
-# =========================
 
 def abrir_ventana_registro():
-
     ventana = ctk.CTkToplevel(app)
 
     ventana.attributes("-topmost", True)
-
     ventana.lift()
-
     ventana.focus_force()
 
     ventana.title("Registrar Docente")
-
     ventana.geometry("650x750")
 
     horarios_temp = []
@@ -617,7 +407,6 @@ def abrir_ventana_registro():
         text="Registrar nuevo docente",
         font=("Arial", 22, "bold")
     )
-
     titulo_registro.pack(pady=15)
 
     entrada_nombre_registro = ctk.CTkEntry(
@@ -626,7 +415,6 @@ def abrir_ventana_registro():
         width=350,
         height=40
     )
-
     entrada_nombre_registro.pack(pady=10)
 
     dia_opcion = ctk.CTkOptionMenu(
@@ -640,7 +428,6 @@ def abrir_ventana_registro():
             "Sábado"
         ]
     )
-
     dia_opcion.pack(pady=8)
 
     turno_opcion = ctk.CTkOptionMenu(
@@ -650,7 +437,6 @@ def abrir_ventana_registro():
             "Tarde"
         ]
     )
-
     turno_opcion.pack(pady=8)
 
     entrada_inicio = ctk.CTkEntry(
@@ -658,7 +444,6 @@ def abrir_ventana_registro():
         placeholder_text="Hora inicio 00:00",
         width=250
     )
-
     entrada_inicio.pack(pady=8)
 
     entrada_fin = ctk.CTkEntry(
@@ -666,7 +451,6 @@ def abrir_ventana_registro():
         placeholder_text="Hora fin 00:00",
         width=250
     )
-
     entrada_fin.pack(pady=8)
 
     label_horas = ctk.CTkLabel(
@@ -674,7 +458,6 @@ def abrir_ventana_registro():
         text="Horas académicas calculadas: 0h",
         font=("Arial", 14, "bold")
     )
-
     label_horas.pack(pady=8)
 
     lista_horarios = ctk.CTkLabel(
@@ -683,74 +466,45 @@ def abrir_ventana_registro():
         font=("Arial", 13),
         wraplength=550
     )
-
     lista_horarios.pack(pady=10)
 
     def agregar_horario():
-
         inicio = entrada_inicio.get().strip()
-
         fin = entrada_fin.get().strip()
 
         if inicio == "" or fin == "":
-
             label_horas.configure(
                 text="Complete hora inicio y hora fin"
             )
-
             return
 
         try:
-
-            hora_inicio = datetime.strptime(
-                inicio,
-                "%H:%M"
-            )
-
-            hora_fin = datetime.strptime(
-                fin,
-                "%H:%M"
-            )
+            hora_inicio = datetime.strptime(inicio, "%H:%M")
+            hora_fin = datetime.strptime(fin, "%H:%M")
 
             diferencia = hora_fin - hora_inicio
-
-            minutos = (
-                diferencia.total_seconds() / 60
-            )
+            minutos = diferencia.total_seconds() / 60
 
             if minutos <= 0:
-
                 label_horas.configure(
-                    text="La hora fin debe ser mayor"
+                    text="La hora fin debe ser mayor que la hora inicio"
                 )
-
                 return
 
-            horas_academicas = round(
-                minutos / 45,
-                2
-            )
+            horas_academicas = round(minutos / 45, 2)
 
         except ValueError:
-
             label_horas.configure(
                 text="Formato inválido. Use 00:00"
             )
-
             return
 
         horario = {
-
             "dia": dia_opcion.get(),
-
             "turno": turno_opcion.get(),
-
             "inicio": inicio,
-
             "fin": fin,
-
             "horas": horas_academicas
-
         }
 
         horarios_temp.append(horario)
@@ -760,19 +514,13 @@ def abrir_ventana_registro():
         )
 
         texto = "\n".join([
-
             f"{h['dia']} | {h['turno']} | {h['inicio']} - {h['fin']} | {h['horas']}h"
-
             for h in horarios_temp
-
         ])
 
-        lista_horarios.configure(
-            text=texto
-        )
+        lista_horarios.configure(text=texto)
 
         entrada_inicio.delete(0, "end")
-
         entrada_fin.delete(0, "end")
 
     btn_agregar_horario = ctk.CTkButton(
@@ -782,7 +530,6 @@ def abrir_ventana_registro():
         height=40,
         command=agregar_horario
     )
-
     btn_agregar_horario.pack(pady=10)
 
     boton_capturar = ctk.CTkButton(
@@ -796,17 +543,12 @@ def abrir_ventana_registro():
             horarios_temp
         )
     )
-
     boton_capturar.pack(pady=20)
 
-# =========================
-# VENTANA PRINCIPAL
-# =========================
 
 app = ctk.CTk()
 
 app.title("VitalHuella")
-
 app.geometry("900x650")
 
 titulo = ctk.CTkLabel(
@@ -814,7 +556,6 @@ titulo = ctk.CTkLabel(
     text="VITALHUELLA",
     font=("Arial", 32, "bold")
 )
-
 titulo.pack(pady=20)
 
 btn_registrar = ctk.CTkButton(
@@ -824,7 +565,6 @@ btn_registrar = ctk.CTkButton(
     height=50,
     command=abrir_ventana_registro
 )
-
 btn_registrar.pack(pady=15)
 
 btn_entrada = ctk.CTkButton(
@@ -834,7 +574,6 @@ btn_entrada = ctk.CTkButton(
     height=50,
     command=lambda: reconocer_docente("Entrada")
 )
-
 btn_entrada.pack(pady=15)
 
 btn_salida = ctk.CTkButton(
@@ -844,7 +583,6 @@ btn_salida = ctk.CTkButton(
     height=50,
     command=lambda: reconocer_docente("Salida")
 )
-
 btn_salida.pack(pady=15)
 
 btn_asistencias = ctk.CTkButton(
@@ -854,7 +592,6 @@ btn_asistencias = ctk.CTkButton(
     height=50,
     command=ver_asistencias
 )
-
 btn_asistencias.pack(pady=15)
 
 label_estado = ctk.CTkLabel(
@@ -862,7 +599,6 @@ label_estado = ctk.CTkLabel(
     text="Sistema iniciado",
     font=("Arial", 18)
 )
-
 label_estado.pack(pady=20)
 
 app.mainloop()
