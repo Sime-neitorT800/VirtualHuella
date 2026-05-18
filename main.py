@@ -48,6 +48,19 @@ CREATE TABLE IF NOT EXISTS horarios (
 )
 """)
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS jornadas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT,
+    fecha TEXT,
+    hora_entrada TEXT,
+    hora_salida TEXT,
+    tardanza_minutos INTEGER DEFAULT 0,
+    extra_minutos INTEGER DEFAULT 0,
+    estado TEXT DEFAULT 'Abierta'
+)
+""")
+
 conexion.commit()
 
 try:
@@ -80,6 +93,15 @@ def mostrar_mensaje(ventana, texto, color):
     mensaje.pack(pady=10)
 
 
+def abrir_camara():
+    camara = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+
+    if not camara.isOpened():
+        return None
+
+    return camara
+
+
 def registrar_docente_desde_ventana(nombre, ventana_registro, horarios_temp):
     nombre = nombre.strip()
 
@@ -91,16 +113,20 @@ def registrar_docente_desde_ventana(nombre, ventana_registro, horarios_temp):
         mostrar_mensaje(ventana_registro, "Agregue al menos un horario", "red")
         return
 
-    camara = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    camara = abrir_camara()
 
-    cv2.namedWindow("Registro Docente", cv2.WND_PROP_FULLSCREEN)
+    if camara is None:
+        mostrar_mensaje(ventana_registro, "No se pudo abrir la cámara", "red")
+        return
+
+    cv2.namedWindow("Registro Docente", cv2.WINDOW_NORMAL)
     cv2.setWindowProperty("Registro Docente", cv2.WND_PROP_TOPMOST, 1)
 
     while True:
         resultado, frame = camara.read()
 
         if not resultado:
-            print("Error al leer cámara")
+            mostrar_mensaje(ventana_registro, "No se pudo leer la cámara", "red")
             break
 
         gris = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -228,6 +254,10 @@ def registrar_docente_desde_ventana(nombre, ventana_registro, horarios_temp):
     cv2.destroyAllWindows()
 
 
+# =========================
+# CÁLCULO DE TARDANZA Y EXTRA
+# =========================
+
 def calcular_tardanza_y_extra(nombre, hora_actual, tipo_registro):
     dias_semana = [
         "Lunes",
@@ -252,8 +282,11 @@ def calcular_tardanza_y_extra(nombre, hora_actual, tipo_registro):
 
     horarios = cursor.fetchall()
 
+    tardanza = 0
+    extra = 0
+
     if len(horarios) == 0:
-        return 0, 0
+        return tardanza, extra
 
     hora_real = datetime.strptime(hora_actual, "%H:%M:%S")
 
@@ -261,6 +294,7 @@ def calcular_tardanza_y_extra(nombre, hora_actual, tipo_registro):
     menor_diferencia = None
 
     for inicio, fin in horarios:
+
         if tipo_registro == "Entrada":
             hora_base = datetime.strptime(inicio, "%H:%M")
         else:
@@ -277,10 +311,8 @@ def calcular_tardanza_y_extra(nombre, hora_actual, tipo_registro):
     hora_inicio = datetime.strptime(inicio, "%H:%M")
     hora_fin = datetime.strptime(fin, "%H:%M")
 
-    tardanza = 0
-    extra = 0
-
     if tipo_registro == "Entrada":
+
         tolerancia = hora_inicio + timedelta(minutes=5)
 
         if hora_real > tolerancia:
@@ -288,11 +320,135 @@ def calcular_tardanza_y_extra(nombre, hora_actual, tipo_registro):
             tardanza = int(diferencia.total_seconds() / 60)
 
     elif tipo_registro == "Salida":
+
         if hora_real > hora_fin:
             diferencia = hora_real - hora_fin
             extra = int(diferencia.total_seconds() / 60)
 
     return tardanza, extra
+
+
+# =========================
+# EXTRA FUERA DE HORARIO
+# =========================
+
+def calcular_extra_fuera_de_horario(nombre, fecha_actual, hora_salida):
+    cursor.execute("""
+    SELECT hora
+    FROM asistencias
+    WHERE nombre = ?
+    AND fecha = ?
+    AND tipo = 'Entrada'
+    ORDER BY id DESC
+    LIMIT 1
+    """, (nombre, fecha_actual))
+
+    entrada = cursor.fetchone()
+
+    if entrada is None:
+        return 0
+
+    hora_entrada = datetime.strptime(entrada[0], "%H:%M:%S")
+    hora_salida_dt = datetime.strptime(hora_salida, "%H:%M:%S")
+
+    diferencia = hora_salida_dt - hora_entrada
+    minutos_trabajados = int(diferencia.total_seconds() / 60)
+
+    if minutos_trabajados < 0:
+        return 0
+
+    dias_semana = [
+        "Lunes",
+        "Martes",
+        "Miércoles",
+        "Jueves",
+        "Viernes",
+        "Sábado",
+        "Domingo"
+    ]
+
+    dia_actual = dias_semana[datetime.now().weekday()]
+
+    cursor.execute("""
+    SELECT horarios.id
+    FROM horarios
+    INNER JOIN docentes
+    ON horarios.docente_id = docentes.id
+    WHERE docentes.nombre = ?
+    AND horarios.dia = ?
+    """, (nombre, dia_actual))
+
+    horario = cursor.fetchone()
+
+    if horario is None:
+        return minutos_trabajados
+
+    return 0
+
+
+# =========================
+# GUARDAR JORNADA
+# =========================
+
+def guardar_jornada(nombre, fecha, hora, tipo_registro, tardanza_minutos, extra_minutos):
+
+    if tipo_registro == "Entrada":
+
+        cursor.execute("""
+        INSERT INTO jornadas (
+            nombre,
+            fecha,
+            hora_entrada,
+            tardanza_minutos,
+            extra_minutos,
+            estado
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            nombre,
+            fecha,
+            hora,
+            tardanza_minutos,
+            0,
+            "Abierta"
+        ))
+
+        conexion.commit()
+
+    elif tipo_registro == "Salida":
+
+        cursor.execute("""
+        SELECT id
+        FROM jornadas
+        WHERE nombre = ?
+        AND fecha = ?
+        AND estado = 'Abierta'
+        ORDER BY id DESC
+        LIMIT 1
+        """, (
+            nombre,
+            fecha
+        ))
+
+        jornada = cursor.fetchone()
+
+        if jornada is not None:
+
+            jornada_id = jornada[0]
+
+            cursor.execute("""
+            UPDATE jornadas
+            SET hora_salida = ?,
+                extra_minutos = ?,
+                estado = 'Cerrada'
+            WHERE id = ?
+            """, (
+                hora,
+                extra_minutos,
+                jornada_id
+            ))
+
+            conexion.commit()
 
 
 def reconocer_docente(tipo_registro):
@@ -313,16 +469,20 @@ def reconocer_docente(tipo_registro):
         label_estado.configure(text="No hay docentes registrados")
         return
 
-    camara = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    camara = abrir_camara()
 
-    cv2.namedWindow("Reconocimiento Facial", cv2.WND_PROP_FULLSCREEN)
+    if camara is None:
+        label_estado.configure(text="No se pudo abrir la cámara")
+        return
+
+    cv2.namedWindow("Reconocimiento Facial", cv2.WINDOW_NORMAL)
     cv2.setWindowProperty("Reconocimiento Facial", cv2.WND_PROP_TOPMOST, 1)
 
     while True:
         resultado, frame = camara.read()
 
         if not resultado:
-            print("Error al leer cámara")
+            label_estado.configure(text="No se pudo leer la cámara")
             break
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -350,9 +510,10 @@ def reconocer_docente(tipo_registro):
                 cursor.execute("""
                 SELECT tipo FROM asistencias
                 WHERE nombre = ?
+                AND fecha = ?
                 ORDER BY id DESC
                 LIMIT 1
-                """, (nombre,))
+                """, (nombre, fecha))
 
                 ultimo_registro = cursor.fetchone()
 
@@ -370,6 +531,16 @@ def reconocer_docente(tipo_registro):
                     hora,
                     tipo_registro
                 )
+
+                if tipo_registro == "Salida":
+                    extra_fuera = calcular_extra_fuera_de_horario(
+                        nombre,
+                        fecha,
+                        hora
+                    )
+
+                    if extra_fuera > extra_minutos:
+                        extra_minutos = extra_fuera
 
                 cursor.execute("""
                 INSERT INTO asistencias (
@@ -391,6 +562,15 @@ def reconocer_docente(tipo_registro):
                 ))
 
                 conexion.commit()
+
+                guardar_jornada(
+                    nombre,
+                    fecha,
+                    hora,
+                    tipo_registro,
+                    tardanza_minutos,
+                    extra_minutos
+                )
 
                 label_estado.configure(
                     text=f"{tipo_registro} registrada: {nombre} | Tardanza: {tardanza_minutos} min | Extra: {extra_minutos} min"
@@ -459,19 +639,19 @@ def ver_asistencias():
     ventana = ctk.CTkToplevel(app)
 
     ventana.title("Registro de Asistencias")
-    ventana.geometry("850x550")
+    ventana.geometry("1000x550")
     ventana.attributes("-topmost", True)
 
     titulo = ctk.CTkLabel(
         ventana,
-        text="Registro de Asistencias",
+        text="Registro de Jornadas",
         font=("Arial", 24, "bold")
     )
     titulo.pack(pady=20)
 
     cursor.execute("""
-    SELECT nombre, fecha, hora, tipo, tardanza_minutos, extra_minutos
-    FROM asistencias
+    SELECT nombre, fecha, hora_entrada, hora_salida, tardanza_minutos, extra_minutos, estado
+    FROM jornadas
     ORDER BY id DESC
     """)
 
@@ -480,7 +660,7 @@ def ver_asistencias():
     if len(registros) == 0:
         mensaje = ctk.CTkLabel(
             ventana,
-            text="No hay asistencias registradas",
+            text="No hay jornadas registradas",
             font=("Arial", 16)
         )
         mensaje.pack(pady=20)
@@ -488,13 +668,17 @@ def ver_asistencias():
 
     encabezado = ctk.CTkLabel(
         ventana,
-        text="Docente | Fecha | Hora | Tipo | Tardanza | Extra",
+        text="Docente | Fecha | Entrada | Salida | Tardanza | Extra | Estado",
         font=("Arial", 15, "bold")
     )
     encabezado.pack(pady=10)
 
-    for nombre, fecha, hora, tipo, tardanza, extra in registros:
-        texto = f"{nombre} | {fecha} | {hora} | {tipo} | {tardanza} min | {extra} min"
+    for nombre, fecha, entrada, salida, tardanza, extra, estado in registros:
+
+        if salida is None:
+            salida = "--:--"
+
+        texto = f"{nombre} | {fecha} | {entrada} | {salida} | {tardanza} min | {extra} min | {estado}"
 
         fila = ctk.CTkLabel(
             ventana,
