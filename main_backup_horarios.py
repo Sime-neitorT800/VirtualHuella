@@ -548,12 +548,12 @@ def abrir_ventana_registro():
 
 app = ctk.CTk()
 
-app.title("VitalHuella")
+app.title("VitalFace")
 app.geometry("900x650")
 
 titulo = ctk.CTkLabel(
     app,
-    text="VITALHUELLA",
+    text="VITALHFACE",
     font=("Arial", 32, "bold")
 )
 titulo.pack(pady=20)
