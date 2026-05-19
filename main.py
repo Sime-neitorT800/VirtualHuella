@@ -8,9 +8,17 @@ from datetime import datetime, timedelta
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
+# =========================
+# DETECTOR FACIAL
+# =========================
+
 detector = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
+
+# =========================
+# BASE DE DATOS
+# =========================
 
 conexion = sqlite3.connect("database/vitalhuella.db")
 cursor = conexion.cursor()
@@ -81,6 +89,9 @@ except sqlite3.OperationalError:
 
 conexion.commit()
 
+# =========================
+# MENSAJES
+# =========================
 
 def mostrar_mensaje(ventana, texto, color):
     mensaje = ctk.CTkLabel(
@@ -92,6 +103,9 @@ def mostrar_mensaje(ventana, texto, color):
     )
     mensaje.pack(pady=10)
 
+# =========================
+# CÁMARA
+# =========================
 
 def abrir_camara():
     camara = cv2.VideoCapture(0, cv2.CAP_DSHOW)
@@ -101,6 +115,9 @@ def abrir_camara():
 
     return camara
 
+# =========================
+# REGISTRAR DOCENTE
+# =========================
 
 def registrar_docente_desde_ventana(nombre, ventana_registro, horarios_temp):
     nombre = nombre.strip()
@@ -253,9 +270,8 @@ def registrar_docente_desde_ventana(nombre, ventana_registro, horarios_temp):
     camara.release()
     cv2.destroyAllWindows()
 
-
 # =========================
-# CÁLCULO DE TARDANZA Y EXTRA
+# CÁLCULO DE TARDANZA, EXTRA Y ESTADO
 # =========================
 
 def calcular_tardanza_y_extra(nombre, hora_actual, tipo_registro):
@@ -284,21 +300,28 @@ def calcular_tardanza_y_extra(nombre, hora_actual, tipo_registro):
 
     tardanza = 0
     extra = 0
-
-    if len(horarios) == 0:
-        return tardanza, extra
+    estado_jornada = "Abierta"
 
     hora_real = datetime.strptime(hora_actual, "%H:%M:%S")
+
+    if len(horarios) == 0:
+        return 0, 0, "Fuera de contrato"
 
     horario_cercano = None
     menor_diferencia = None
 
     for inicio, fin in horarios:
+        hora_inicio = datetime.strptime(inicio, "%H:%M")
+        hora_fin = datetime.strptime(fin, "%H:%M")
 
         if tipo_registro == "Entrada":
-            hora_base = datetime.strptime(inicio, "%H:%M")
+            # Si el horario ya terminó, esta entrada no debe contarse como tardanza.
+            if hora_real > hora_fin:
+                continue
+
+            hora_base = hora_inicio
         else:
-            hora_base = datetime.strptime(fin, "%H:%M")
+            hora_base = hora_fin
 
         diferencia = abs((hora_real - hora_base).total_seconds())
 
@@ -306,13 +329,15 @@ def calcular_tardanza_y_extra(nombre, hora_actual, tipo_registro):
             menor_diferencia = diferencia
             horario_cercano = (inicio, fin)
 
+    if horario_cercano is None:
+        return 0, 0, "Fuera de contrato"
+
     inicio, fin = horario_cercano
 
     hora_inicio = datetime.strptime(inicio, "%H:%M")
     hora_fin = datetime.strptime(fin, "%H:%M")
 
     if tipo_registro == "Entrada":
-
         tolerancia = hora_inicio + timedelta(minutes=5)
 
         if hora_real > tolerancia:
@@ -320,13 +345,11 @@ def calcular_tardanza_y_extra(nombre, hora_actual, tipo_registro):
             tardanza = int(diferencia.total_seconds() / 60)
 
     elif tipo_registro == "Salida":
-
         if hora_real > hora_fin:
             diferencia = hora_real - hora_fin
             extra = int(diferencia.total_seconds() / 60)
 
-    return tardanza, extra
-
+    return tardanza, extra, estado_jornada
 
 # =========================
 # EXTRA FUERA DE HORARIO
@@ -334,66 +357,46 @@ def calcular_tardanza_y_extra(nombre, hora_actual, tipo_registro):
 
 def calcular_extra_fuera_de_horario(nombre, fecha_actual, hora_salida):
     cursor.execute("""
-    SELECT hora
-    FROM asistencias
+    SELECT hora_entrada, estado
+    FROM jornadas
     WHERE nombre = ?
     AND fecha = ?
-    AND tipo = 'Entrada'
+    AND hora_salida IS NULL
     ORDER BY id DESC
     LIMIT 1
     """, (nombre, fecha_actual))
 
-    entrada = cursor.fetchone()
+    jornada = cursor.fetchone()
 
-    if entrada is None:
-        return 0
+    if jornada is None:
+        return 0, None
 
-    hora_entrada = datetime.strptime(entrada[0], "%H:%M:%S")
+    hora_entrada_txt = jornada[0]
+    estado = jornada[1]
+
+    if hora_entrada_txt is None:
+        return 0, estado
+
+    hora_entrada = datetime.strptime(hora_entrada_txt, "%H:%M:%S")
     hora_salida_dt = datetime.strptime(hora_salida, "%H:%M:%S")
 
     diferencia = hora_salida_dt - hora_entrada
     minutos_trabajados = int(diferencia.total_seconds() / 60)
 
     if minutos_trabajados < 0:
-        return 0
+        return 0, estado
 
-    dias_semana = [
-        "Lunes",
-        "Martes",
-        "Miércoles",
-        "Jueves",
-        "Viernes",
-        "Sábado",
-        "Domingo"
-    ]
+    if estado == "Fuera de contrato":
+        return minutos_trabajados, estado
 
-    dia_actual = dias_semana[datetime.now().weekday()]
-
-    cursor.execute("""
-    SELECT horarios.id
-    FROM horarios
-    INNER JOIN docentes
-    ON horarios.docente_id = docentes.id
-    WHERE docentes.nombre = ?
-    AND horarios.dia = ?
-    """, (nombre, dia_actual))
-
-    horario = cursor.fetchone()
-
-    if horario is None:
-        return minutos_trabajados
-
-    return 0
-
+    return 0, estado
 
 # =========================
 # GUARDAR JORNADA
 # =========================
 
-def guardar_jornada(nombre, fecha, hora, tipo_registro, tardanza_minutos, extra_minutos):
-
+def guardar_jornada(nombre, fecha, hora, tipo_registro, tardanza_minutos, extra_minutos, estado_jornada):
     if tipo_registro == "Entrada":
-
         cursor.execute("""
         INSERT INTO jornadas (
             nombre,
@@ -410,19 +413,19 @@ def guardar_jornada(nombre, fecha, hora, tipo_registro, tardanza_minutos, extra_
             hora,
             tardanza_minutos,
             0,
-            "Abierta"
+            estado_jornada
         ))
 
         conexion.commit()
+        return estado_jornada
 
     elif tipo_registro == "Salida":
-
         cursor.execute("""
-        SELECT id
+        SELECT id, estado
         FROM jornadas
         WHERE nombre = ?
         AND fecha = ?
-        AND estado = 'Abierta'
+        AND hora_salida IS NULL
         ORDER BY id DESC
         LIMIT 1
         """, (
@@ -433,23 +436,35 @@ def guardar_jornada(nombre, fecha, hora, tipo_registro, tardanza_minutos, extra_
         jornada = cursor.fetchone()
 
         if jornada is not None:
-
             jornada_id = jornada[0]
+            estado_actual = jornada[1]
+
+            if estado_actual == "Fuera de contrato":
+                nuevo_estado = "Fuera de contrato"
+            else:
+                nuevo_estado = "Cerrada"
 
             cursor.execute("""
             UPDATE jornadas
             SET hora_salida = ?,
                 extra_minutos = ?,
-                estado = 'Cerrada'
+                estado = ?
             WHERE id = ?
             """, (
                 hora,
                 extra_minutos,
+                nuevo_estado,
                 jornada_id
             ))
 
             conexion.commit()
+            return nuevo_estado
 
+    return "Sin jornada abierta"
+
+# =========================
+# RECONOCER DOCENTE
+# =========================
 
 def reconocer_docente(tipo_registro):
     rostros_conocidos = []
@@ -510,10 +525,9 @@ def reconocer_docente(tipo_registro):
                 cursor.execute("""
                 SELECT tipo FROM asistencias
                 WHERE nombre = ?
-                AND fecha = ?
                 ORDER BY id DESC
                 LIMIT 1
-                """, (nombre, fecha))
+                """, (nombre,))
 
                 ultimo_registro = cursor.fetchone()
 
@@ -526,20 +540,23 @@ def reconocer_docente(tipo_registro):
                     cv2.destroyAllWindows()
                     return
 
-                tardanza_minutos, extra_minutos = calcular_tardanza_y_extra(
+                tardanza_minutos, extra_minutos, estado_jornada = calcular_tardanza_y_extra(
                     nombre,
                     hora,
                     tipo_registro
                 )
 
                 if tipo_registro == "Salida":
-                    extra_fuera = calcular_extra_fuera_de_horario(
+                    extra_fuera, estado_abierto = calcular_extra_fuera_de_horario(
                         nombre,
                         fecha,
                         hora
                     )
 
-                    if extra_fuera > extra_minutos:
+                    if estado_abierto == "Fuera de contrato":
+                        extra_minutos = extra_fuera
+                        estado_jornada = "Fuera de contrato"
+                    elif extra_fuera > extra_minutos:
                         extra_minutos = extra_fuera
 
                 cursor.execute("""
@@ -563,28 +580,23 @@ def reconocer_docente(tipo_registro):
 
                 conexion.commit()
 
-                guardar_jornada(
+                estado_final = guardar_jornada(
                     nombre,
                     fecha,
                     hora,
                     tipo_registro,
                     tardanza_minutos,
-                    extra_minutos
+                    extra_minutos,
+                    estado_jornada
                 )
 
                 label_estado.configure(
-                    text=f"{tipo_registro} registrada: {nombre} | Tardanza: {tardanza_minutos} min | Extra: {extra_minutos} min"
+                    text=f"{tipo_registro}: {nombre} | Tardanza {tardanza_minutos} min | Extra {extra_minutos} min | {estado_final}"
                 )
 
                 top, right, bottom, left = ubicacion
 
-                cv2.rectangle(
-                    frame,
-                    (left, top),
-                    (right, bottom),
-                    (0, 255, 0),
-                    3
-                )
+                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 3)
 
                 cv2.putText(
                     frame,
@@ -606,13 +618,7 @@ def reconocer_docente(tipo_registro):
 
             top, right, bottom, left = ubicacion
 
-            cv2.rectangle(
-                frame,
-                (left, top),
-                (right, bottom),
-                (0, 0, 255),
-                3
-            )
+            cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 3)
 
             cv2.putText(
                 frame,
@@ -634,6 +640,9 @@ def reconocer_docente(tipo_registro):
     camara.release()
     cv2.destroyAllWindows()
 
+# =========================
+# VER ASISTENCIAS
+# =========================
 
 def ver_asistencias():
     ventana = ctk.CTkToplevel(app)
@@ -644,7 +653,7 @@ def ver_asistencias():
 
     titulo = ctk.CTkLabel(
         ventana,
-        text="Registro de Jornadas",
+        text="Registro de Asistencias",
         font=("Arial", 24, "bold")
     )
     titulo.pack(pady=20)
@@ -660,7 +669,7 @@ def ver_asistencias():
     if len(registros) == 0:
         mensaje = ctk.CTkLabel(
             ventana,
-            text="No hay jornadas registradas",
+            text="No hay asistencias registradas",
             font=("Arial", 16)
         )
         mensaje.pack(pady=20)
@@ -674,6 +683,8 @@ def ver_asistencias():
     encabezado.pack(pady=10)
 
     for nombre, fecha, entrada, salida, tardanza, extra, estado in registros:
+        if entrada is None:
+            entrada = "--:--"
 
         if salida is None:
             salida = "--:--"
@@ -686,6 +697,377 @@ def ver_asistencias():
             font=("Arial", 14)
         )
         fila.pack(pady=5)
+
+# =========================
+# VENTANA REGISTRO DOCENTE
+# =========================
+
+def gestionar_docentes():
+
+    ventana = ctk.CTkToplevel(app)
+    ventana.title("Gestionar Docentes")
+    ventana.geometry("1100x800")
+    ventana.attributes("-topmost", True)
+
+    titulo = ctk.CTkLabel(
+        ventana,
+        text="Docentes Registrados",
+        font=("Arial", 28, "bold")
+    )
+    titulo.pack(pady=20)
+
+    contenedor = ctk.CTkScrollableFrame(
+        ventana,
+        width=1000,
+        height=680
+    )
+    contenedor.pack(pady=10)
+
+    def refrescar():
+
+        ventana.destroy()
+        gestionar_docentes()
+
+    def eliminar_docente(docente_id, ruta_rostro):
+
+        cursor.execute("""
+        DELETE FROM horarios
+        WHERE docente_id = ?
+        """, (docente_id,))
+
+        cursor.execute("""
+        DELETE FROM docentes
+        WHERE id = ?
+        """, (docente_id,))
+
+        conexion.commit()
+
+        if ruta_rostro and os.path.exists(ruta_rostro):
+            os.remove(ruta_rostro)
+
+        refrescar()
+
+    def eliminar_horario(horario_id):
+
+        cursor.execute("""
+        DELETE FROM horarios
+        WHERE id = ?
+        """, (horario_id,))
+
+        conexion.commit()
+
+        refrescar()
+
+    def abrir_editor_horarios(docente_id, nombre_docente):
+
+        editor = ctk.CTkToplevel(ventana)
+
+        editor.title(f"Horarios de {nombre_docente}")
+        editor.geometry("650x650")
+
+        editor.attributes("-topmost", True)
+        editor.lift()
+        editor.focus_force()
+        editor.grab_set()
+        editor.protocol(
+            "WM_DELETE_WINDOW",
+            lambda: (
+            editor.destroy(),
+            refrescar()
+        )
+)
+
+        titulo_editor = ctk.CTkLabel(
+            editor,
+            text=f"Gestionar horarios\n{nombre_docente}",
+            font=("Arial", 22, "bold")
+        )
+        titulo_editor.pack(pady=20)
+
+        dia_opcion = ctk.CTkOptionMenu(
+            editor,
+            values=[
+                "Lunes",
+                "Martes",
+                "Miércoles",
+                "Jueves",
+                "Viernes",
+                "Sábado"
+            ]
+        )
+        dia_opcion.pack(pady=8)
+
+        turno_opcion = ctk.CTkOptionMenu(
+            editor,
+            values=[
+                "Mañana",
+                "Tarde"
+            ]
+        )
+        turno_opcion.pack(pady=8)
+
+        entrada_inicio = ctk.CTkEntry(
+            editor,
+            placeholder_text="Hora inicio 00:00",
+            width=250
+        )
+        entrada_inicio.pack(pady=8)
+
+        entrada_fin = ctk.CTkEntry(
+            editor,
+            placeholder_text="Hora fin 00:00",
+            width=250
+        )
+        entrada_fin.pack(pady=8)
+
+        label_mensaje = ctk.CTkLabel(
+            editor,
+            text="",
+            font=("Arial", 14, "bold")
+        )
+        label_mensaje.pack(pady=8)
+
+        def agregar_horario_docente():
+
+            inicio = entrada_inicio.get().strip()
+            fin = entrada_fin.get().strip()
+
+            if inicio == "" or fin == "":
+                label_mensaje.configure(
+                    text="Complete hora inicio y hora fin",
+                    text_color="red"
+                )
+                return
+
+            try:
+                hora_inicio = datetime.strptime(inicio, "%H:%M")
+                hora_fin = datetime.strptime(fin, "%H:%M")
+
+                diferencia = hora_fin - hora_inicio
+                minutos = diferencia.total_seconds() / 60
+
+                if minutos <= 0:
+                    label_mensaje.configure(
+                        text="La hora fin debe ser mayor",
+                        text_color="red"
+                    )
+                    return
+
+                horas_academicas = round(minutos / 45, 2)
+
+            except ValueError:
+                label_mensaje.configure(
+                    text="Formato inválido. Use 00:00",
+                    text_color="red"
+                )
+                return
+
+            cursor.execute("""
+            INSERT INTO horarios (
+                docente_id,
+                dia,
+                turno,
+                hora_inicio,
+                hora_fin,
+                horas_academicas
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                docente_id,
+                dia_opcion.get(),
+                turno_opcion.get(),
+                inicio,
+                fin,
+                horas_academicas
+            ))
+
+            conexion.commit()
+
+            label_mensaje.configure(
+                text=f"Horario agregado: {horas_academicas}h académicas",
+                text_color="green"
+            )
+
+            entrada_inicio.delete(0, "end")
+            entrada_fin.delete(0, "end")
+
+            editor.destroy()
+
+            abrir_editor_horarios(docente_id, nombre_docente)
+
+        btn_agregar = ctk.CTkButton(
+            editor,
+            text="Agregar horario",
+            width=220,
+            height=40,
+            command=agregar_horario_docente
+        )
+        btn_agregar.pack(pady=12)
+
+        subtitulo = ctk.CTkLabel(
+            editor,
+            text="Horarios actuales",
+            font=("Arial", 18, "bold")
+        )
+        subtitulo.pack(pady=15)
+
+        lista = ctk.CTkScrollableFrame(
+            editor,
+            width=580,
+            height=260
+        )
+        lista.pack(pady=10)
+
+        cursor.execute("""
+        SELECT id, dia, turno, hora_inicio, hora_fin, horas_academicas
+        FROM horarios
+        WHERE docente_id = ?
+        ORDER BY dia ASC, hora_inicio ASC
+        """, (docente_id,))
+
+        horarios = cursor.fetchall()
+
+        if len(horarios) == 0:
+
+            sin_horarios = ctk.CTkLabel(
+                lista,
+                text="Sin horarios registrados",
+                font=("Arial", 14)
+            )
+            sin_horarios.pack(pady=10)
+
+        else:
+
+            for horario_id, dia, turno, inicio, fin, horas in horarios:
+
+                fila = ctk.CTkFrame(lista)
+                fila.pack(pady=6, padx=10, fill="x")
+
+                texto = ctk.CTkLabel(
+                    fila,
+                    text=f"{dia} | {turno} | {inicio} - {fin} | {horas}h académicas",
+                    font=("Arial", 13),
+                    width=390
+                )
+                texto.pack(side="left", padx=10)
+
+                btn_borrar = ctk.CTkButton(
+                    fila,
+                    text="Eliminar",
+                    width=100,
+                    height=30,
+                    fg_color="#8B1E1E",
+                    hover_color="#B22222",
+                    command=lambda h=horario_id: (
+                        cursor.execute("""
+                        DELETE FROM horarios
+                        WHERE id = ?
+                        """, (h,)),
+                        conexion.commit(),
+                        editor.destroy(),
+                        refrescar()
+                    )
+                )
+                btn_borrar.pack(side="right", padx=10)
+
+    cursor.execute("""
+    SELECT id, nombre, ruta_rostro
+    FROM docentes
+    ORDER BY nombre ASC
+    """)
+
+    docentes = cursor.fetchall()
+
+    if len(docentes) == 0:
+
+        mensaje = ctk.CTkLabel(
+            contenedor,
+            text="No hay docentes registrados",
+            font=("Arial", 16)
+        )
+        mensaje.pack(pady=20)
+        return
+
+    for docente_id, nombre, ruta_rostro in docentes:
+
+        tarjeta = ctk.CTkFrame(
+            contenedor,
+            corner_radius=15,
+            fg_color="#144B52"
+        )
+        tarjeta.pack(pady=15, padx=25, fill="x")
+
+        nombre_label = ctk.CTkLabel(
+            tarjeta,
+            text=f"Docente: {nombre}",
+            font=("Arial", 20, "bold")
+        )
+        nombre_label.pack(pady=10)
+
+        botones_frame = ctk.CTkFrame(
+            tarjeta,
+            fg_color="transparent"
+        )
+        botones_frame.pack(pady=5)
+
+        btn_horarios = ctk.CTkButton(
+            botones_frame,
+            text="Gestionar horarios",
+            width=180,
+            height=35,
+            command=lambda d=docente_id, n=nombre: abrir_editor_horarios(d, n)
+        )
+        btn_horarios.pack(side="left", padx=10)
+
+        btn_eliminar_docente = ctk.CTkButton(
+            botones_frame,
+            text="Eliminar docente",
+            width=170,
+            height=35,
+            fg_color="#8B1E1E",
+            hover_color="#B22222",
+            command=lambda d=docente_id, r=ruta_rostro: eliminar_docente(d, r)
+        )
+        btn_eliminar_docente.pack(side="left", padx=10)
+
+        cursor.execute("""
+        SELECT id, dia, turno, hora_inicio, hora_fin, horas_academicas
+        FROM horarios
+        WHERE docente_id = ?
+        ORDER BY dia ASC, hora_inicio ASC
+        """, (docente_id,))
+
+        horarios = cursor.fetchall()
+
+        if len(horarios) == 0:
+
+            label_sin_horario = ctk.CTkLabel(
+                tarjeta,
+                text="Sin horarios registrados",
+                font=("Arial", 14)
+            )
+            label_sin_horario.pack(pady=10)
+
+        else:
+
+            for horario_id, dia, turno, inicio, fin, horas in horarios:
+
+                fila_horario = ctk.CTkFrame(
+                    tarjeta,
+                    fg_color="#4B4B4B",
+                    corner_radius=8
+                )
+                fila_horario.pack(pady=4, padx=15, fill="x")
+
+                label_horario = ctk.CTkLabel(
+                    fila_horario,
+                    text=f"{dia} | {turno} | {inicio} - {fin} | {horas}h académicas",
+                    font=("Arial", 14)
+                )
+                label_horario.pack(side="left", padx=15, pady=6)
+
+                
+
 
 
 def abrir_ventana_registro():
@@ -771,9 +1153,7 @@ def abrir_ventana_registro():
         fin = entrada_fin.get().strip()
 
         if inicio == "" or fin == "":
-            label_horas.configure(
-                text="Complete hora inicio y hora fin"
-            )
+            label_horas.configure(text="Complete hora inicio y hora fin")
             return
 
         try:
@@ -784,17 +1164,13 @@ def abrir_ventana_registro():
             minutos = diferencia.total_seconds() / 60
 
             if minutos <= 0:
-                label_horas.configure(
-                    text="La hora fin debe ser mayor"
-                )
+                label_horas.configure(text="La hora fin debe ser mayor")
                 return
 
             horas_academicas = round(minutos / 45, 2)
 
         except ValueError:
-            label_horas.configure(
-                text="Formato inválido. Use 00:00"
-            )
+            label_horas.configure(text="Formato inválido. Use 00:00")
             return
 
         horario = {
@@ -843,6 +1219,9 @@ def abrir_ventana_registro():
     )
     boton_capturar.pack(pady=20)
 
+# =========================
+# VENTANA PRINCIPAL
+# =========================
 
 app = ctk.CTk()
 
@@ -891,6 +1270,16 @@ btn_asistencias = ctk.CTkButton(
     command=ver_asistencias
 )
 btn_asistencias.pack(pady=15)
+
+btn_gestionar = ctk.CTkButton(
+    app,
+    text="Gestionar Docentes",
+    width=250,
+    height=50,
+    command=gestionar_docentes
+)
+
+btn_gestionar.pack(pady=15)
 
 label_estado = ctk.CTkLabel(
     app,
